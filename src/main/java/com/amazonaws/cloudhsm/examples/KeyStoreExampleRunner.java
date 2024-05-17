@@ -16,10 +16,15 @@
  */
 package com.amazonaws.cloudhsm.examples;
 
+import com.amazonaws.cloudhsm.jce.jni.exception.InternalException;
 import com.amazonaws.cloudhsm.jce.provider.CloudHsmProvider;
+import com.amazonaws.cloudhsm.jce.provider.KeyStoreWithAttributes;
 import com.amazonaws.cloudhsm.jce.provider.attributes.KeyAttribute;
 import com.amazonaws.cloudhsm.jce.provider.attributes.KeyAttributesMap;
 import com.amazonaws.cloudhsm.jce.provider.attributes.KeyAttributesMapBuilder;
+import com.amazonaws.cloudhsm.jce.provider.attributes.KeyReferenceSpec;
+import com.amazonaws.cloudhsm.jce.provider.attributes.KeyType;
+import com.amazonaws.cloudhsm.jce.provider.attributes.ObjectClassType;
 
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
@@ -36,6 +41,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.security.InvalidKeyException;
+import java.security.Key;
 import java.security.KeyPair;
 import java.security.KeyStore;
 import java.security.KeyStore.PasswordProtection;
@@ -46,9 +52,11 @@ import java.security.Security;
 import java.security.SignatureException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
+import java.security.spec.InvalidKeySpecException;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.List;
 
 /**
  * KeyStoreExampleRunner demonstrates how to load a keystore, get a key entry, sign and store a
@@ -62,13 +70,13 @@ public class KeyStoreExampleRunner {
 
     private static final String helpString =
             "KeyStoreExampleRunner\n"
-                + "This sample demonstrates how to load and store keys using a keystore.\n\n"
-                + "Options\n"
-                + "\t--help\t\t\tDisplay this message.\n"
-                + "\t--store <filename>\t\tPath of the keystore.\n"
+                + "This sample demonstrates how to load and store keys using a keystore.\n\n" + "Options\n"
+                + "\t--help\t\t\tDisplay this message.\n" + "\t--store <filename>\t\tPath of the keystore.\n"
                 + "\t--password <password>\t\tPassword for the keystore (not your CU password).\n"
                 + "\t--label <label>\t\t\tLabel to store the key and certificate under.\n"
-                + "\t--list\t\t\tList all the keys in the keystore.\n\n";
+                + "\t--list\t\t\tList all the keys in the keystore.\n"
+                + "\t--rsa-private-keys\t\tGet all RSA private keys using getKeys and KeyAttributesMap.\n"
+                + "\t--getkey <key-reference-long>\t\tGet a matching key using key-reference.\n\n";
 
     public static void main(final String[] args) throws Exception {
         try {
@@ -83,7 +91,8 @@ public class KeyStoreExampleRunner {
         String keystoreFile = null;
         String password = null;
         String labelArg = null;
-        boolean list = false;
+        String keyReferenceValue = null;
+        Operation operation = Operation.None;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             switch (args[i]) {
@@ -97,7 +106,14 @@ public class KeyStoreExampleRunner {
                     labelArg = args[++i];
                     break;
                 case "--list":
-                    list = true;
+                    operation = Operation.List;
+                    break;
+                case "--rsa-private-keys":
+                    operation = Operation.GetKeys;
+                    break;
+                case "--getkey":
+                    operation = Operation.GetKeyByReference;
+                    keyReferenceValue = args[++i];
                     break;
                 case "--help":
                     help();
@@ -110,9 +126,16 @@ public class KeyStoreExampleRunner {
             return;
         }
 
-        if (list) {
-            listKeys(keystoreFile, password);
-            return;
+        switch (operation) {
+            case List:
+                listKeys(keystoreFile, password);
+                return;
+            case GetKeys:
+                getKeys(keystoreFile, password);
+                return;
+            case GetKeyByReference:
+                getKey(keystoreFile, password, keyReferenceValue);
+                return;
         }
 
         final String label;
@@ -171,7 +194,11 @@ public class KeyStoreExampleRunner {
         final PrivateKeyEntry keyEntry =
                 (PrivateKeyEntry) keyStore.getEntry(privateLabel, passwordProtection);
         final String name = keyEntry.getCertificate().toString();
-        System.out.printf("Found private key %s with certificate %s%n", label, name);
+        System.out.printf("Found private key with label %s and certificate %s%n", label, name);
+    }
+
+    private enum Operation {
+        None, List, GetKeys, GetKeyByReference
     }
 
     private static void help() {
@@ -236,4 +263,66 @@ public class KeyStoreExampleRunner {
         final JcaX509CertificateConverter converter = new JcaX509CertificateConverter();
         return converter.getCertificate(certificateHolder);
     }
+
+    /** Fetches all keys matching filter criteria - Private, RSA using KeyStoreWithAttributes **/
+    private static void getKeys(String keystoreFile, String password) throws Exception {
+        final KeyStoreWithAttributes keyStore = KeyStoreWithAttributes.getInstance(CloudHsmProvider.PROVIDER_NAME);
+
+        try {
+            final FileInputStream inputStream = new FileInputStream(keystoreFile);
+            keyStore.load(inputStream, password.toCharArray());
+        } catch (final FileNotFoundException ex) {
+            System.err.println("Keystore not found, creating an empty store.");
+            keyStore.load(null, null);
+        }
+
+        final KeyAttributesMap searchSpec = new KeyAttributesMap();
+        searchSpec.put(KeyAttribute.KEY_TYPE, KeyType.RSA);
+        searchSpec.put(KeyAttribute.OBJECT_CLASS, ObjectClassType.PRIVATE_KEY);
+
+        try {
+            List<Key> keys = keyStore.getKeys(searchSpec);
+            if (!keys.isEmpty()) {
+                System.out.println("Total number of RSA Private Keys found : " + keys.size());
+            } else {
+                System.out.println("RSA Private Keys not found");
+            }
+
+        } catch (InvalidKeySpecException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Fetches the key matching given Key-Reference value using KeyStoreWithAttributes **/
+    private static void getKey(String keystoreFile, String password, String keyReferenceValue) throws Exception {
+        final KeyStoreWithAttributes keyStore = KeyStoreWithAttributes.getInstance(CloudHsmProvider.PROVIDER_NAME);
+
+        try {
+            final FileInputStream inputStream = new FileInputStream(keystoreFile);
+            keyStore.load(inputStream, password.toCharArray());
+        } catch (final FileNotFoundException ex) {
+            System.err.println("Keystore not found, creating an empty store.");
+            keyStore.load(null, null);
+        }
+
+        try {
+            KeyReferenceSpec keyReferenceSpec = KeyReferenceSpec.getInstance(Long.parseLong(keyReferenceValue));
+            Key key = keyStore.getKey(keyReferenceSpec);
+            if (key != null) {
+                System.out.println("Found a key using key reference : " + keyReferenceValue);
+            } else {
+                System.out.println("Key not found using key reference: " + keyReferenceValue);
+            }
+
+        } catch (InvalidKeySpecException e) {
+            throw new RuntimeException(e);
+        } catch (NumberFormatException e) {
+            System.err.println("Unable to parse KeyReferenceValue");
+            throw new RuntimeException(e);
+        } catch (InternalException e) {
+            System.err.println("Error in getKey Operation " + e);
+            throw new RuntimeException(e);
+        }
+    }
+
 }
