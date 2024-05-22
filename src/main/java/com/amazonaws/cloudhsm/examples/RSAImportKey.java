@@ -35,6 +35,9 @@ import java.util.Base64;
 import javax.crypto.Cipher;
 import javax.crypto.spec.OAEPParameterSpec;
 import javax.crypto.spec.PSource;
+import com.amazonaws.cloudhsm.jce.provider.attributes.KeyAttribute;
+import com.amazonaws.cloudhsm.jce.provider.attributes.KeyAttributesMap;
+import com.amazonaws.cloudhsm.jce.provider.spec.OAEPUnwrapKeySpec;
 
 /**
  * This sample uses RSA OAEP padding to import a wrapped AES key.
@@ -77,7 +80,8 @@ public class RSAImportKey {
             "\t--hash\t\t\tType of hash used to wrap [SHA1, SHA256(default)].\n" +
             "\t--key-size\t\tSize of the wrapping key in bits [2048, 4096].\n" +
             "\t--wrapped-key\t\tLocation of AES Wrapped key.\n" +
-            "\t--unwrapping-key\tLocation of unwrapping key, in PKCS8 format.\n";
+            "\t--unwrapping-key\tLocation of unwrapping key, in PKCS8 format.\n" +
+            "\t--label\t\t\tLabel of imported key in HSM.\n";
 
     public static void main(String[] args) throws Exception {
         try {
@@ -92,6 +96,7 @@ public class RSAImportKey {
         String transformation = null;
         String unwrappingKeyFile = null;
         Integer keySize = 0;
+        String label = null;
 
 
         for (int i = 0; i < args.length; i++) {
@@ -115,6 +120,9 @@ public class RSAImportKey {
                         return;
                     }
                     keySize = keySize / 8;
+                    break;
+                case "--label":
+                    label = args[++i];
                     break;
             }
         }
@@ -164,6 +172,11 @@ public class RSAImportKey {
             return;
         }
 
+        if (null == label) {
+            System.out.println("No label specified, using the default label.");
+            label = "rsa_import_sample";
+        }
+
         Path path = Paths.get(keyFile);
         byte[] wrappedBytes = Files.readAllBytes(path);
         if (wrappedBytes.length != keySize) {
@@ -174,9 +187,14 @@ public class RSAImportKey {
 
         Key unwrappingKey = readPrivateKey(unwrappingKeyFile);
 
-        OAEPParameterSpec spec = new OAEPParameterSpec(hash, "MGF1", paramSpec, PSource.PSpecified.DEFAULT);
+        OAEPParameterSpec oaepspec = new OAEPParameterSpec(hash, "MGF1", paramSpec, PSource.PSpecified.DEFAULT);
+        KeyAttributesMap unwrappedKeyAttrsMap = new KeyAttributesMap();
+        unwrappedKeyAttrsMap.put(KeyAttribute.LABEL, label);
+        unwrappedKeyAttrsMap.put(KeyAttribute.TOKEN, false);
+
+        OAEPUnwrapKeySpec unwrapSpec = new OAEPUnwrapKeySpec(oaepspec, unwrappedKeyAttrsMap); 
         Cipher cipher = Cipher.getInstance(transformation, CloudHsmProvider.PROVIDER_NAME);
-        cipher.init(Cipher.UNWRAP_MODE, unwrappingKey, spec);
+        cipher.init(Cipher.UNWRAP_MODE, unwrappingKey, unwrapSpec);
         Key unwrappedExtractableKey = cipher.unwrap(wrappedBytes, "AES", Cipher.SECRET_KEY);
         if (null != unwrappedExtractableKey) {
             System.out.println("Your key has been unwrapped and imported");
